@@ -441,7 +441,13 @@ void gspca_frame_add(struct gspca_dev *gspca_dev,
 		}
 		j = gspca_dev->fr_queue[i];
 		frame = &gspca_dev->frame[j];
-		frame->v4l2_buf.timestamp = ktime_to_timeval(ktime_get());
+		// frame->v4l2_buf.timestamp = ktime_get_real(ktime_get());
+		// frame->v4l2_buf.timestamp = ktime_to_timespec64(ktime_get_real());
+		struct timespec64 ts;
+		ktime_get_real_ts64(&ts);
+		frame->v4l2_buf.timestamp.tv_sec = ts.tv_sec;
+		frame->v4l2_buf.timestamp.tv_usec = ts.tv_nsec / 1000;
+		
 		frame->v4l2_buf.sequence = gspca_dev->sequence++;
 		gspca_dev->image = frame->data;
 		gspca_dev->image_len = 0;
@@ -1324,10 +1330,10 @@ static int vidioc_querycap(struct file *file, void  *priv,
 {
 	struct gspca_dev *gspca_dev = video_drvdata(file);
 
-	strlcpy((char *) cap->driver, gspca_dev->sd_desc->name,
+	strscpy((char *) cap->driver, gspca_dev->sd_desc->name,
 			sizeof cap->driver);
 	if (gspca_dev->dev->product != NULL) {
-		strlcpy((char *) cap->card, gspca_dev->dev->product,
+		strscpy((char *) cap->card, gspca_dev->dev->product,
 			sizeof cap->card);
 	} else {
 		snprintf((char *) cap->card, sizeof cap->card,
@@ -1353,7 +1359,7 @@ static int vidioc_enum_input(struct file *file, void *priv,
 		return -EINVAL;
 	input->type = V4L2_INPUT_TYPE_CAMERA;
 	input->status = gspca_dev->cam.input_flags;
-	strlcpy(input->name, gspca_dev->sd_desc->name,
+	strscpy(input->name, gspca_dev->sd_desc->name,
 		sizeof input->name);
 	return 0;
 }
@@ -1628,11 +1634,15 @@ static int dev_mmap(struct file *file, struct vm_area_struct *vma)
 	 * - VM_IO marks the area as being a mmaped region for I/O to a
 	 *   device. It also prevents the region from being core dumped.
 	 */
-	vma->vm_flags |= VM_IO;
+	// vma->vm_flags |= VM_IO;
 
 	addr = (unsigned long) frame->data;
 	while (size > 0) {
 		page = vmalloc_to_page((void *) addr);
+		if (!page) {
+			ret = -ENOMEM;
+			goto out;
+		}
 		ret = vm_insert_page(vma, start, page);
 		if (ret < 0)
 			goto out;
@@ -1901,7 +1911,7 @@ static ssize_t dev_read(struct file *file, char __user *data,
 	struct gspca_dev *gspca_dev = video_drvdata(file);
 	struct gspca_frame *frame;
 	struct v4l2_buffer v4l2_buf;
-	struct timeval timestamp;
+	struct timespec64 timestamp;
 	int n, ret, ret2;
 
 	PDEBUG(D_FRAM, "read (%zd)", count);
@@ -1912,7 +1922,9 @@ static ssize_t dev_read(struct file *file, char __user *data,
 	}
 
 	/* get a frame */
-	timestamp = ktime_to_timeval(ktime_get());
+	// timestamp = ktime_to_timeval(ktime_get());
+	// timestamp = ktime_to_timespec64(ktime_get_real());
+	ktime_get_real_ts64(&timestamp);
 	timestamp.tv_sec--;
 	n = 2;
 	for (;;) {
@@ -2067,7 +2079,7 @@ int gspca_dev_probe2(struct usb_interface *intf,
 	gspca_dev->vdev = gspca_template;
 	gspca_dev->vdev.v4l2_dev = &gspca_dev->v4l2_dev;
 	video_set_drvdata(&gspca_dev->vdev, gspca_dev);
-	set_bit(V4L2_FL_USE_FH_PRIO, &gspca_dev->vdev.flags);
+	set_bit(V4L2_FL_USES_V4L2_FH, &gspca_dev->vdev.flags);
 	gspca_dev->module = module;
 	gspca_dev->present = 1;
 
@@ -2098,9 +2110,9 @@ int gspca_dev_probe2(struct usb_interface *intf,
 	 * usb_lock is taken for a long time, e.g. when changing a control
 	 * value, and a new frame is ready to be dequeued.
 	 */
-	v4l2_disable_ioctl_locking(&gspca_dev->vdev, VIDIOC_DQBUF);
-	v4l2_disable_ioctl_locking(&gspca_dev->vdev, VIDIOC_QBUF);
-	v4l2_disable_ioctl_locking(&gspca_dev->vdev, VIDIOC_QUERYBUF);
+	v4l2_disable_ioctl(&gspca_dev->vdev, VIDIOC_DQBUF);
+	v4l2_disable_ioctl(&gspca_dev->vdev, VIDIOC_QBUF);
+	v4l2_disable_ioctl(&gspca_dev->vdev, VIDIOC_QUERYBUF);
 #ifdef CONFIG_VIDEO_ADV_DEBUG
 	if (!gspca_dev->sd_desc->get_register)
 		v4l2_disable_ioctl(&gspca_dev->vdev, VIDIOC_DBG_G_REGISTER);
@@ -2114,7 +2126,7 @@ int gspca_dev_probe2(struct usb_interface *intf,
 
 	/* init video stuff */
 	ret = video_register_device(&gspca_dev->vdev,
-				  VFL_TYPE_GRABBER,
+				  VFL_TYPE_SUBDEV,
 				  -1);
 	if (ret < 0) {
 		pr_err("video_register_device err %d\n", ret);
